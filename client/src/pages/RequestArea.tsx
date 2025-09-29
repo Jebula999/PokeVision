@@ -1,0 +1,466 @@
+import { useState, useRef, useCallback, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Link } from "wouter";
+import { Home } from "lucide-react";
+import MapDraw, { MapDrawRef } from "@/components/MapDraw";
+import pokevisionLogo from "@assets/image6555_1758124202791.png";
+
+interface GeofenceData {
+  type: 'square' | 'polygon';
+  area: number; // in km²
+  coordinates: string[]; // lat,lng format
+  imageData: string; // base64 image
+}
+
+interface GeofenceCollection {
+  geofences: GeofenceData[];
+  totalArea: number;
+  totalCost: number;
+}
+
+const RequestArea = () => {
+  const [geofenceCollection, setGeofenceCollection] = useState<GeofenceCollection>({
+    geofences: [],
+    totalArea: 0,
+    totalCost: 0
+  });
+  const [shouldClearCanvas, setShouldClearCanvas] = useState(false);
+  const mapRef = useRef<MapDrawRef>(null);
+  const [formData, setFormData] = useState({
+    discordUsername: '',
+    areaName: '',
+    questions: '',
+    pricingTier: 'shadows-raids' as 'shadows-raids' | 'pokemon-pvp'
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+
+  const calculateCost = (area: number, tier: string): number => {
+    if (tier === 'shadows-raids') {
+      // $10 per 100km²
+      return Math.ceil(area / 100) * 10;
+    } else {
+      // Pokemon PVP: $15 per 5km²
+      return Math.ceil(area / 5) * 15;
+    }
+  };
+
+  const formatArea = (area: number): string => {
+    return area.toFixed(2);
+  };
+
+  const handleShapeComplete = useCallback((shape: any) => {
+    if (shape.type === 'sync') {
+      // Handle sync from delete/edit operations
+      const geofences = shape.geofences || [];
+      const totalArea = geofences.reduce((sum: number, g: any) => sum + g.area, 0);
+      const totalCost = calculateCost(totalArea, formData.pricingTier);
+      
+      setGeofenceCollection({
+        geofences,
+        totalArea,
+        totalCost
+      });
+      return;
+    }
+
+    if (shape.area === 0 || !shape.coordinates || shape.coordinates.length === 0) {
+      // This is a clear/reset event, don't add to collection
+      return;
+    }
+
+    const newGeofence: GeofenceData = {
+      type: shape.type,
+      area: shape.area,
+      coordinates: shape.coordinates || [],
+      imageData: shape.imageData || ''
+    };
+
+    setGeofenceCollection(prev => {
+      const updatedGeofences = [...prev.geofences, newGeofence];
+      const totalArea = updatedGeofences.reduce((sum, g) => sum + g.area, 0);
+      const totalCost = calculateCost(totalArea, formData.pricingTier);
+      
+      return {
+        geofences: updatedGeofences,
+        totalArea,
+        totalCost
+      };
+    });
+    
+    setShouldClearCanvas(false);
+  }, [formData.pricingTier]);
+
+  const handleClearArea = () => {
+    setGeofenceCollection({
+      geofences: [],
+      totalArea: 0,
+      totalCost: 0
+    });
+    if (mapRef.current) {
+      mapRef.current.clearMap();
+    }
+  };
+
+  const handleCanvasClear = useCallback(() => {
+    setShouldClearCanvas(false);
+  }, []);
+
+  // Recalculate cost when pricing tier changes
+  useEffect(() => {
+    if (geofenceCollection.totalArea > 0) {
+      const newCost = calculateCost(geofenceCollection.totalArea, formData.pricingTier);
+      setGeofenceCollection(prev => ({
+        ...prev,
+        totalCost: newCost
+      }));
+    }
+  }, [formData.pricingTier, geofenceCollection.totalArea]);
+
+  const formatCoordinatesForDiscord = () => {
+    return geofenceCollection.geofences.map((geofence, index) => {
+      const header = `[Geofence ${index + 1}]`;
+      const coords = geofence.coordinates.join('\n');
+      return `${header}\n${coords}`;
+    }).join('\n\n');
+  };
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const submitWithRetry = async (maxRetries: number = 5): Promise<void> => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      setRetryAttempt(attempt);
+      
+      try {
+        const response = await fetch('/api/request-area', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Request-Timestamp': Date.now().toString()
+          },
+          body: JSON.stringify({ 
+            formData, 
+            geofenceCollection: {
+              ...geofenceCollection,
+              formattedCoordinates: formatCoordinatesForDiscord()
+            }
+          }),
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+          // Success! Reset form and clear map
+          alert('Request submitted successfully! We will contact you via Discord soon.');
+          setFormData({
+            discordUsername: '',
+            areaName: '',
+            questions: '',
+            pricingTier: 'shadows-raids' as 'shadows-raids' | 'pokemon-pvp'
+          });
+          setGeofenceCollection({
+            geofences: [],
+            totalArea: 0,
+            totalCost: 0
+          });
+          setShouldClearCanvas(true);
+          return;
+        } 
+        
+        // If we get a 500 error and haven't reached max retries, continue to retry
+        if (response.status === 500 && attempt < maxRetries) {
+          console.log(`Attempt ${attempt} failed with 500 error, retrying in 3 seconds...`);
+          await sleep(3000); // Wait 3 seconds before retry
+          continue;
+        }
+        
+        // For non-500 errors or final attempt, show error and stop
+        alert(`Failed to submit request: ${result.error || 'Unknown error'}`);
+        return;
+        
+      } catch (error) {
+        // Network error or other exception
+        if (attempt < maxRetries) {
+          console.log(`Attempt ${attempt} failed with network error, retrying in 3 seconds...`);
+          await sleep(3000);
+          continue;
+        }
+        
+        // Final attempt failed
+        alert('Failed to submit request. Please check your connection and try again.');
+        return;
+      }
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (geofenceCollection.geofences.length === 0 || !formData.discordUsername) {
+      alert('Please enter your Discord username and draw at least one area on the map.');
+      return;
+    }
+
+    if (isSubmitting) {
+      return; // Prevent multiple simultaneous submissions
+    }
+
+    setIsSubmitting(true);
+    setRetryAttempt(0);
+    
+    try {
+      await submitWithRetry();
+    } finally {
+      setIsSubmitting(false);
+      setRetryAttempt(0);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <div className="border-b border-card-border bg-card/30">
+        <div className="container mx-auto max-w-6xl px-4 lg:px-8 py-6">
+          <div className="flex justify-between items-start">
+            <div className="flex items-center gap-4">
+              <img 
+                src={pokevisionLogo} 
+                alt="PokéVision Logo" 
+                className="h-10 w-auto"
+                data-testid="logo-main"
+              />
+              <div>
+                <h1 className="text-3xl lg:text-4xl font-bold text-foreground">
+                  Request An <span className="metallic-gold">Area</span>
+                </h1>
+                <p className="text-muted-foreground mt-2">
+                  Define your area of interest and get a custom quote for PokéVision coverage.
+                </p>
+              </div>
+            </div>
+            <Link href="/">
+              <Button 
+                variant="outline" 
+                size="lg"
+                className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-8 py-3 flex items-center gap-2"
+                data-testid="button-back-home"
+              >
+                <Home className="w-4 h-4" />
+                Back to Home
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      <div className="container mx-auto max-w-6xl px-4 lg:px-8 py-8 space-y-8">
+        {/* Map Section - Full Width */}
+        <Card className="subtle-gold-gradient">
+          <CardHeader>
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-4">
+                <Button 
+                  size="lg"
+                  onClick={handleClearArea}
+                  className="metallic-gold-bg text-black hover:opacity-90 text-base px-8 py-3 font-semibold"
+                  data-testid="button-clear-area"
+                >
+                  Clear Area
+                </Button>
+                <CardTitle>Map Preview</CardTitle>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="w-full">
+                <MapDraw
+                  ref={mapRef}
+                  onShapeComplete={handleShapeComplete}
+                  onClear={handleCanvasClear}
+                  shouldClear={shouldClearCanvas}
+                />
+              </div>
+              
+              {geofenceCollection.geofences.length > 0 && (
+                <div className="p-3 bg-card/50 rounded border border-card-border space-y-2">
+                  <div className="text-sm space-y-1">
+                    {geofenceCollection.geofences.map((geofence, index) => (
+                      <div key={index} className="flex justify-between">
+                        <span>Geofence {index + 1}:</span>
+                        <span>{formatArea(geofence.area)} km²</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t pt-2">
+                    <div className="flex justify-between font-semibold">
+                      <span>Total Area:</span>
+                      <span>{formatArea(geofenceCollection.totalArea)} km²</span>
+                    </div>
+                    <div className="flex justify-between metallic-gold font-semibold">
+                      <span>Total Cost:</span>
+                      <span>${geofenceCollection.totalCost}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Form Section - Full Width Below Map */}
+        <Card className="subtle-gold-gradient">
+          <CardHeader>
+            <CardTitle>Request Details</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <Label htmlFor="discordUsername">Discord Username *</Label>
+                  <Input
+                    id="discordUsername"
+                    value={formData.discordUsername}
+                    onChange={(e) => setFormData(prev => ({ ...prev, discordUsername: e.target.value }))}
+                    placeholder="your_discord_username"
+                    required
+                    data-testid="input-discord"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    We'll contact you via Discord to discuss your area request.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="areaName">Area Name</Label>
+                  <Input
+                    id="areaName"
+                    value={formData.areaName}
+                    onChange={(e) => setFormData(prev => ({ ...prev, areaName: e.target.value }))}
+                    placeholder="Name for this area (optional)"
+                    data-testid="input-area-name"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label>Pricing Tier *</Label>
+                <RadioGroup 
+                  value={formData.pricingTier} 
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, pricingTier: value as 'shadows-raids' | 'pokemon-pvp' }))}
+                  className="grid grid-cols-1 gap-4"
+                  data-testid="radio-pricing-tier"
+                >
+                  <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-card/50 transition-colors">
+                    <RadioGroupItem value="shadows-raids" id="shadows-raids" className="mt-1" />
+                    <div className="flex-1">
+                      <Label htmlFor="shadows-raids" className="cursor-pointer">
+                        <div className="font-semibold text-foreground">Shadows and Raids - $10 per 100km²</div>
+                        <div className="text-sm text-muted-foreground mt-1">
+                          Pokéstops (Invasions, Lures, Event Stops, Showcases), Gyms (Raids), Weather, Routes, Wayfarer, Submission Cells
+                        </div>
+                      </Label>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-card/50 transition-colors">
+                    <RadioGroupItem value="pokemon-pvp" id="pokemon-pvp" className="mt-1" />
+                    <div className="flex-1">
+                      <Label htmlFor="pokemon-pvp" className="cursor-pointer">
+                        <div className="font-semibold text-foreground">Pokémon, PVP and Quests - $15 per 5km²</div>
+                        <div className="text-sm text-muted-foreground mt-1">
+                          Pokémon IVs (Including Hundo's), PvP Rankings, Quests, Nests, Spawnpoints<br/>
+                          <span className="font-semibold">Includes:</span> Shadows and Raids
+                        </div>
+                      </Label>
+                    </div>
+                  </div>
+                </RadioGroup>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="questions">Questions or Special Requests</Label>
+                <Textarea
+                  id="questions"
+                  value={formData.questions}
+                  onChange={(e) => setFormData(prev => ({ ...prev, questions: e.target.value }))}
+                  placeholder="Any questions or special requests for this area..."
+                  className="min-h-24"
+                  data-testid="input-questions"
+                />
+              </div>
+
+              {geofenceCollection.geofences.length > 0 && (
+                <Card className="bg-card/50 border-primary/20">
+                  <CardContent className="pt-6">
+                    <div className="space-y-3">
+                      <h3 className="font-semibold text-foreground">Selected Areas Summary</h3>
+                      <div className="text-sm text-muted-foreground space-y-2">
+                        {geofenceCollection.geofences.map((geofence, index) => (
+                          <div key={index} className="border-b pb-2 last:border-b-0">
+                            <p><strong>Geofence {index + 1}:</strong> {geofence.type.charAt(0).toUpperCase() + geofence.type.slice(1)}</p>
+                            <p>Area: {formatArea(geofence.area)} km²</p>
+                          </div>
+                        ))}
+                        <div className="pt-2 border-t">
+                          <p className="text-base font-semibold text-foreground">
+                            Total Area: {formatArea(geofenceCollection.totalArea)} km²
+                          </p>
+                          <p className="text-lg font-semibold metallic-gold">
+                            Total Estimated Cost: ${geofenceCollection.totalCost}
+                          </p>
+                          <p className="text-xs">
+                            {formData.pricingTier === 'shadows-raids' 
+                              ? `Shadows & Raids: $10 per 100km² (${Math.ceil(geofenceCollection.totalArea / 100)} tier${Math.ceil(geofenceCollection.totalArea / 100) > 1 ? 's' : ''})`
+                              : `Pokémon, PVP & Quests: $15 per 5km² (${Math.ceil(geofenceCollection.totalArea / 5)} tier${Math.ceil(geofenceCollection.totalArea / 5) > 1 ? 's' : ''})`
+                            }
+                          </p>
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <h4 className="font-medium text-foreground">All Coordinates:</h4>
+                        <div className="bg-background/50 rounded p-2 max-h-32 overflow-y-auto">
+                          <pre className="text-xs text-muted-foreground whitespace-pre-wrap">
+                            {formatCoordinatesForDiscord()}
+                          </pre>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              <Button 
+                type="submit" 
+                className="w-full metallic-gold-bg text-black hover:opacity-90 font-semibold"
+                disabled={geofenceCollection.geofences.length === 0 || isSubmitting}
+                data-testid="button-submit-request"
+              >
+                {isSubmitting ? (
+                  retryAttempt > 1 ? 
+                    `Retrying... (${retryAttempt}/5)` : 
+                    'Submitting...'
+                ) : (
+                  'Submit Request'
+                )}
+              </Button>
+
+              <p className="text-xs text-muted-foreground text-center">
+                * Required fields. We'll review your request and contact you within 24 hours.
+              </p>
+              </form>
+            </CardContent>
+          </Card>
+      </div>
+    </div>
+  );
+};
+
+export default RequestArea;
