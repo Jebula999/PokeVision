@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Link } from "wouter";
 import { Home } from "lucide-react";
 import MapDraw, { MapDrawRef } from "@/components/MapDraw";
@@ -37,8 +38,29 @@ const RequestArea = () => {
     questions: '',
     pricingTier: 'shadows-raids' as 'shadows-raids' | 'pokemon-pvp'
   });
+  const isPokemonTier = formData.pricingTier === 'pokemon-pvp';
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [retryAttempt, setRetryAttempt] = useState(0);
+  const [coverageCounts, setCoverageCounts] = useState({ gyms: 0, pokestops: 0 });
+  const [showGyms, setShowGyms] = useState(true);
+  const [showPokestops, setShowPokestops] = useState(true);
+
+  const tierSummaries = [
+    {
+      id: 'shadows-raids' as const,
+      title: 'Pokestops and Gyms',
+      rate: '$10 per 100km²',
+      description:
+        "Pokéstops (Invasions, Lures, Event Stops, Showcases), Gyms (Raids), Weather, Routes, Wayfarer, Submission Cells",
+    },
+    {
+      id: 'pokemon-pvp' as const,
+      title: 'Pokemon and Quests',
+      rate: '$15 per 5km²',
+      description:
+        "Pokémon IVs (including Hundos), PvP rankings, Quests, Nests, Spawnpoints. Includes everything from Pokestops and Gyms.",
+    },
+  ];
 
   const calculateCost = (area: number, tier: string): number => {
     if (tier === 'shadows-raids') {
@@ -96,12 +118,20 @@ const RequestArea = () => {
     setShouldClearCanvas(false);
   }, [formData.pricingTier]);
 
+  const handleTierToggle = (checked: boolean) => {
+    setFormData(prev => ({
+      ...prev,
+      pricingTier: checked ? 'pokemon-pvp' : 'shadows-raids',
+    }));
+  };
+
   const handleClearArea = () => {
     setGeofenceCollection({
       geofences: [],
       totalArea: 0,
       totalCost: 0
     });
+    setCoverageCounts({ gyms: 0, pokestops: 0 });
     if (mapRef.current) {
       mapRef.current.clearMap();
     }
@@ -109,6 +139,7 @@ const RequestArea = () => {
 
   const handleCanvasClear = useCallback(() => {
     setShouldClearCanvas(false);
+    setCoverageCounts({ gyms: 0, pokestops: 0 });
   }, []);
 
   // Recalculate cost when pricing tier changes
@@ -123,11 +154,9 @@ const RequestArea = () => {
   }, [formData.pricingTier, geofenceCollection.totalArea]);
 
   const formatCoordinatesForDiscord = () => {
-    return geofenceCollection.geofences.map((geofence, index) => {
-      const header = `[Geofence ${index + 1}]`;
-      const coords = geofence.coordinates.join('\n');
-      return `${header}\n${coords}`;
-    }).join('\n\n');
+    return geofenceCollection.geofences
+      .map((geofence) => geofence.coordinates.join('\n'))
+      .join('\n\n');
   };
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -168,6 +197,7 @@ const RequestArea = () => {
             totalArea: 0,
             totalCost: 0
           });
+          setCoverageCounts({ gyms: 0, pokestops: 0 });
           setShouldClearCanvas(true);
           return;
         } 
@@ -262,7 +292,7 @@ const RequestArea = () => {
         {/* Map Section - Full Width */}
         <Card className="subtle-gold-gradient">
           <CardHeader>
-            <div className="flex justify-between items-center">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-4">
                 <Button 
                   size="lg"
@@ -272,7 +302,66 @@ const RequestArea = () => {
                 >
                   Clear Area
                 </Button>
-                <CardTitle>Map Preview</CardTitle>
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-6">
+                  <CardTitle>Map Preview</CardTitle>
+                  <div className="flex flex-col gap-2 text-xs sm:text-sm text-muted-foreground">
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={showGyms}
+                        onCheckedChange={(checked) => setShowGyms(checked === true)}
+                        aria-label="Toggle gyms visibility"
+                      />
+                      <span>
+                        Enabled Gyms Covered:
+                        {' '}
+                        <span className="font-semibold text-foreground">{showGyms ? coverageCounts.gyms : 0}</span>
+                      </span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={showPokestops}
+                        onCheckedChange={(checked) => setShowPokestops(checked === true)}
+                        aria-label="Toggle pokestops visibility"
+                      />
+                      <span>
+                        Enabled Pokestops Covered:
+                        {' '}
+                        <span className="font-semibold text-foreground">{showPokestops ? coverageCounts.pokestops : 0}</span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div className="ml-auto flex flex-col items-end gap-3 text-right">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Estimated Cost
+                  </p>
+                  <p className="text-2xl font-semibold metallic-gold">
+                    ${geofenceCollection.totalCost}
+                  </p>
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                    Toggle pricing structure
+                  </span>
+                  <div className="flex items-center gap-2 text-xs sm:text-sm text-muted-foreground">
+                    <span className={`${!isPokemonTier ? 'font-semibold text-[#D4AF37]' : ''}`}>
+                      Pokestops & Gyms
+                    </span>
+                    <Switch
+                      checked={isPokemonTier}
+                      onCheckedChange={handleTierToggle}
+                      className="border border-card-border bg-[#D4AF37] data-[state=unchecked]:bg-[#D4AF37] data-[state=checked]:bg-[#D4AF37] shadow-inner"
+                      thumbClassName="bg-black"
+                      data-testid="toggle-pricing-tier"
+                      aria-label="Toggle pricing tier"
+                    />
+                    <span className={`${isPokemonTier ? 'font-semibold text-[#D4AF37]' : ''}`}>
+                      Pokemon & Quests
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           </CardHeader>
@@ -284,6 +373,9 @@ const RequestArea = () => {
                   onShapeComplete={handleShapeComplete}
                   onClear={handleCanvasClear}
                   shouldClear={shouldClearCanvas}
+                  onCoverageChange={setCoverageCounts}
+                  showGyms={showGyms}
+                  showPokestops={showPokestops}
                 />
               </div>
               
@@ -350,38 +442,31 @@ const RequestArea = () => {
               </div>
 
               <div className="space-y-3">
-                <Label>Pricing Tier *</Label>
-                <RadioGroup 
-                  value={formData.pricingTier} 
-                  onValueChange={(value) => setFormData(prev => ({ ...prev, pricingTier: value as 'shadows-raids' | 'pokemon-pvp' }))}
-                  className="grid grid-cols-1 gap-4"
-                  data-testid="radio-pricing-tier"
-                >
-                  <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-card/50 transition-colors">
-                    <RadioGroupItem value="shadows-raids" id="shadows-raids" className="mt-1" />
-                    <div className="flex-1">
-                      <Label htmlFor="shadows-raids" className="cursor-pointer">
-                        <div className="font-semibold text-foreground">Shadows and Raids - $10 per 100km²</div>
-                        <div className="text-sm text-muted-foreground mt-1">
-                          Pokéstops (Invasions, Lures, Event Stops, Showcases), Gyms (Raids), Weather, Routes, Wayfarer, Submission Cells
-                        </div>
-                      </Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Pricing Tier *</Label>
+                  <span className="text-xs text-muted-foreground">
+                    Use the toggle above to switch plans.
+                  </span>
+                </div>
+                <div className="grid gap-3">
+                  {tierSummaries.map((tier) => (
+                    <div
+                      key={tier.id}
+                      className={`rounded-lg border p-4 text-sm transition-colors ${
+                        formData.pricingTier === tier.id
+                          ? 'border-primary/60 bg-card/80 shadow-sm'
+                          : 'border-card-border bg-card/40'
+                      }`}
+                    >
+                      <p className="font-semibold text-foreground">
+                        {tier.title} — {tier.rate}
+                      </p>
+                      <p className="mt-1 text-muted-foreground">
+                        {tier.description}
+                      </p>
                     </div>
-                  </div>
-                  
-                  <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-card/50 transition-colors">
-                    <RadioGroupItem value="pokemon-pvp" id="pokemon-pvp" className="mt-1" />
-                    <div className="flex-1">
-                      <Label htmlFor="pokemon-pvp" className="cursor-pointer">
-                        <div className="font-semibold text-foreground">Pokémon, PVP and Quests - $15 per 5km²</div>
-                        <div className="text-sm text-muted-foreground mt-1">
-                          Pokémon IVs (Including Hundo's), PvP Rankings, Quests, Nests, Spawnpoints<br/>
-                          <span className="font-semibold">Includes:</span> Shadows and Raids
-                        </div>
-                      </Label>
-                    </div>
-                  </div>
-                </RadioGroup>
+                  ))}
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -417,8 +502,8 @@ const RequestArea = () => {
                           </p>
                           <p className="text-xs">
                             {formData.pricingTier === 'shadows-raids' 
-                              ? `Shadows & Raids: $10 per 100km² (${Math.ceil(geofenceCollection.totalArea / 100)} tier${Math.ceil(geofenceCollection.totalArea / 100) > 1 ? 's' : ''})`
-                              : `Pokémon, PVP & Quests: $15 per 5km² (${Math.ceil(geofenceCollection.totalArea / 5)} tier${Math.ceil(geofenceCollection.totalArea / 5) > 1 ? 's' : ''})`
+                              ? `Pokestops and Gyms: $10 per 100km² (${Math.ceil(geofenceCollection.totalArea / 100)} tier${Math.ceil(geofenceCollection.totalArea / 100) > 1 ? 's' : ''})`
+                              : `Pokemon and Quests: $15 per 5km² (${Math.ceil(geofenceCollection.totalArea / 5)} tier${Math.ceil(geofenceCollection.totalArea / 5) > 1 ? 's' : ''})`
                             }
                           </p>
                         </div>
@@ -427,9 +512,7 @@ const RequestArea = () => {
                       <div className="space-y-2">
                         <h4 className="font-medium text-foreground">All Coordinates:</h4>
                         <div className="bg-background/50 rounded p-2 max-h-32 overflow-y-auto">
-                          <pre className="text-xs text-muted-foreground whitespace-pre-wrap">
-                            {formatCoordinatesForDiscord()}
-                          </pre>
+                          <pre className="text-xs text-muted-foreground whitespace-pre-wrap">{formatCoordinatesForDiscord()}</pre>
                         </div>
                       </div>
                     </div>

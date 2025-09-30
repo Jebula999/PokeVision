@@ -24,20 +24,50 @@ interface MapDrawProps {
   }) => void;
   shouldClear: boolean;
   onClear: () => void;
+  onCoverageChange?: (counts: { gyms: number; pokestops: number }) => void;
+  showGyms?: boolean;
+  showPokestops?: boolean;
 }
+
+type MapPointFeature = {
+  lat: number;
+  lon: number;
+  type: string;
+  teamId?: number | null;
+};
 
 export interface MapDrawRef {
   clearMap: () => void;
 }
 
-const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldClear, onClear }, ref) => {
+const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(
+  (
+    {
+      onShapeComplete,
+      shouldClear,
+      onClear,
+      onCoverageChange,
+      showGyms = true,
+      showPokestops = true,
+    },
+    ref,
+  ) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
+  const pointsLayerRef = useRef<L.LayerGroup | null>(null);
+  const markerFetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markerAbortControllerRef = useRef<AbortController | null>(null);
+  const activePointsRef = useRef<MapPointFeature[]>([]);
+  const showGymsRef = useRef<boolean>(showGyms);
+  const showPokestopsRef = useRef<boolean>(showPokestops);
+  const schedulePointFetchRef = useRef<((immediate?: boolean) => void) | null>(null);
+  const updateCoverageRef = useRef<(() => void) | null>(null);
   
   // Store callback functions in refs to avoid re-initializing map
   const onShapeCompleteRef = useRef(onShapeComplete);
   const onClearRef = useRef(onClear);
+  const onCoverageChangeRef = useRef(onCoverageChange);
   
   // Update refs when props change
   useEffect(() => {
@@ -48,10 +78,17 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
     onClearRef.current = onClear;
   }, [onClear]);
 
+  useEffect(() => {
+    onCoverageChangeRef.current = onCoverageChange;
+  }, [onCoverageChange]);
+
   useImperativeHandle(ref, () => ({
     clearMap: () => {
       if (drawnItemsRef.current) {
         drawnItemsRef.current.clearLayers();
+      }
+      if (onCoverageChangeRef.current) {
+        onCoverageChangeRef.current({ gyms: 0, pokestops: 0 });
       }
     }
   }));
@@ -137,6 +174,263 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
 
     map.addControl(drawControl);
 
+    // Create layer group for gyms/pokestops
+    const pokestopLayer = L.layerGroup().addTo(map);
+    const gymLayer = L.layerGroup().addTo(map);
+    const combinedLayer = L.layerGroup([pokestopLayer, gymLayer]);
+    pointsLayerRef.current = combinedLayer;
+
+    const inferLayerType = (layer: any): 'rectangle' | 'polygon' => {
+      if (layer instanceof (L.Rectangle as any)) {
+        return 'rectangle';
+      }
+      return 'polygon';
+    };
+
+    const buildPolygonCoords = (layer: any, layerType: string): [number, number][] => {
+      if (layerType === 'rectangle') {
+        const bounds = layer.getBounds();
+        const ne = bounds.getNorthEast();
+        const sw = bounds.getSouthWest();
+        const nw = L.latLng(ne.lat, sw.lng);
+        const se = L.latLng(sw.lat, ne.lng);
+
+        return [
+          [ne.lng, ne.lat],
+          [se.lng, se.lat],
+          [sw.lng, sw.lat],
+          [nw.lng, nw.lat],
+          [ne.lng, ne.lat],
+        ];
+      }
+
+      const latlngs = layer.getLatLngs?.()[0] ?? [];
+      const coords = (latlngs as L.LatLng[]).map((latlng) => [latlng.lng, latlng.lat] as [number, number]);
+      if (coords.length === 0) {
+        return [];
+      }
+      coords.push(coords[0]);
+      return coords;
+    };
+
+    const calculateLayerData = (layer: any, layerType: string) => {
+      const polygonCoords = buildPolygonCoords(layer, layerType);
+
+      const coordinates = polygonCoords.map(([lng, lat]) => `${lat},${lng}`);
+      const area = polygonCoords.length >= 4
+        ? turf.area(turf.polygon([polygonCoords])) / 1000000
+        : 0;
+
+      return { coordinates, area, polygonCoords };
+    };
+
+    const updateCoverage = () => {
+      if (!onCoverageChangeRef.current) {
+        return;
+      }
+
+      const layers = drawnItemsRef.current?.getLayers() ?? [];
+      if (layers.length === 0) {
+        onCoverageChangeRef.current({ gyms: 0, pokestops: 0 });
+        return;
+      }
+
+      const includeGyms = showGymsRef.current !== false;
+      const includePokestops = showPokestopsRef.current !== false;
+
+      if (!includeGyms && !includePokestops) {
+        onCoverageChangeRef.current({ gyms: 0, pokestops: 0 });
+        return;
+      }
+
+      const polygons = layers
+        .map((layer: any) => {
+          const layerType = inferLayerType(layer);
+          const { polygonCoords } = calculateLayerData(layer, layerType);
+          if (polygonCoords.length < 4) {
+            return null;
+          }
+          return turf.polygon([polygonCoords]);
+        })
+        .filter(Boolean) as turf.helpers.Feature<turf.helpers.Polygon>[];
+
+      if (polygons.length === 0) {
+        onCoverageChangeRef.current({ gyms: 0, pokestops: 0 });
+        return;
+      }
+
+      let gyms = 0;
+      let pokestops = 0;
+
+      activePointsRef.current.forEach((point) => {
+        if (point.type === 'gym' && !includeGyms) {
+          return;
+        }
+        if (point.type === 'pokestop' && !includePokestops) {
+          return;
+        }
+        const pt = turf.point([point.lon, point.lat]);
+        const isInside = polygons.some((poly) => turf.booleanPointInPolygon(pt, poly));
+
+        if (isInside) {
+          if (point.type === 'gym') {
+            gyms += 1;
+          } else {
+            pokestops += 1;
+          }
+        }
+      });
+
+      onCoverageChangeRef.current({ gyms, pokestops });
+    };
+
+    const fetchPoints = async () => {
+      if (!pointsLayerRef.current) return;
+
+      const zoomLevel = map.getZoom();
+      if (zoomLevel < 11) {
+        pokestopLayer.clearLayers();
+        gymLayer.clearLayers();
+        activePointsRef.current = [];
+        updateCoverage();
+        return;
+      }
+
+      const bounds = map.getBounds();
+      const params = new URLSearchParams({
+        north: bounds.getNorth().toString(),
+        south: bounds.getSouth().toString(),
+        east: bounds.getEast().toString(),
+        west: bounds.getWest().toString(),
+        zoom: zoomLevel.toString(),
+      });
+
+      if (markerAbortControllerRef.current) {
+        markerAbortControllerRef.current.abort();
+      }
+
+      const controller = new AbortController();
+      markerAbortControllerRef.current = controller;
+
+      try {
+        const response = await fetch(`/api/map-points?${params.toString()}`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to load points (${response.status})`);
+        }
+
+        const data = await response.json();
+        const points: MapPointFeature[] = data?.points ?? [];
+
+        activePointsRef.current = points;
+
+        pokestopLayer.clearLayers();
+        gymLayer.clearLayers();
+
+        const includeGyms = showGymsRef.current !== false;
+        const includePokestops = showPokestopsRef.current !== false;
+
+        const minZoomLevel = 11;
+        const maxZoomLevel = 18;
+        const normalized = Math.min(
+          1,
+          Math.max(0, (zoomLevel - minZoomLevel) / (maxZoomLevel - minZoomLevel)),
+        );
+
+        points.forEach((point) => {
+          if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) {
+            return;
+          }
+
+          if (point.type === 'gym' && !includeGyms) {
+            return;
+          }
+
+          if (point.type === 'pokestop' && !includePokestops) {
+            return;
+          }
+
+          const baseRadius = point.type === 'gym' ? 6 : 3;
+          const minRadius = point.type === 'gym' ? 3 : 1.5;
+          const maxRadius = baseRadius;
+          const scaledRadius = minRadius + (maxRadius - minRadius) * normalized;
+
+          const teamColor = (() => {
+            if (point.type !== 'gym') {
+              return '#D4AF37';
+            }
+
+            switch (point.teamId) {
+              case 1:
+                return '#3B82F6';
+              case 2:
+                return '#EF4444';
+              case 3:
+                return '#FACC15';
+              case 4:
+                return '#9CA3AF';
+              default:
+                return '#D4AF37';
+            }
+          })();
+
+          const circle = L.circleMarker([point.lat, point.lon], {
+            radius: scaledRadius,
+            color: '#000000',
+            weight: 0.8,
+            opacity: 1,
+            fillColor: teamColor,
+            fillOpacity: 0.85,
+            pane: 'markerPane',
+          });
+
+          circle.addTo(point.type === 'gym' ? gymLayer : pokestopLayer);
+        });
+
+        updateCoverage();
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') {
+          return;
+        }
+        console.error('Failed to fetch map points', error);
+      }
+    };
+
+    updateCoverageRef.current = updateCoverage;
+
+    const schedulePointFetch = () => {
+      if (markerFetchTimeoutRef.current) {
+        clearTimeout(markerFetchTimeoutRef.current);
+      }
+      markerFetchTimeoutRef.current = setTimeout(() => {
+        fetchPoints();
+      }, 250);
+    };
+
+    const triggerPointFetch = (immediate = false) => {
+      if (markerFetchTimeoutRef.current) {
+        clearTimeout(markerFetchTimeoutRef.current);
+        markerFetchTimeoutRef.current = null;
+      }
+      if (immediate) {
+        fetchPoints();
+      } else {
+        schedulePointFetch();
+      }
+    };
+
+    schedulePointFetchRef.current = triggerPointFetch;
+
+    map.on('moveend', schedulePointFetch);
+    map.on('zoomend', schedulePointFetch);
+
+    // Trigger initial fetch once the map has settled
+    map.whenReady(() => {
+      schedulePointFetch();
+    });
+
     // Handle draw events
     map.on('draw:created', (event: any) => {
       const layer = event.layer;
@@ -149,45 +443,7 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
       
       drawnItems.addLayer(layer);
 
-      // Get coordinates
-      let coordinates: string[] = [];
-      let area = 0;
-
-      if (layerType === 'rectangle') {
-        const bounds = layer.getBounds();
-        const ne = bounds.getNorthEast();
-        const sw = bounds.getSouthWest();
-        const nw = L.latLng(ne.lat, sw.lng);
-        const se = L.latLng(sw.lat, ne.lng);
-        
-        coordinates = [
-          `${ne.lat},${ne.lng}`,
-          `${se.lat},${se.lng}`,
-          `${sw.lat},${sw.lng}`,
-          `${nw.lat},${nw.lng}`,
-          `${ne.lat},${ne.lng}` // Close the polygon
-        ];
-
-        // Calculate area using Turf
-        const polygon = turf.polygon([[
-          [ne.lng, ne.lat],
-          [se.lng, se.lat],
-          [sw.lng, sw.lat],
-          [nw.lng, nw.lat],
-          [ne.lng, ne.lat]
-        ]]);
-        area = turf.area(polygon) / 1000000; // Convert to km²
-      } else if (layerType === 'polygon') {
-        const latlngs = layer.getLatLngs()[0];
-        coordinates = latlngs.map((latlng: L.LatLng) => `${latlng.lat},${latlng.lng}`);
-        coordinates.push(coordinates[0]); // Close the polygon
-
-        // Convert to Turf polygon format
-        const coords = latlngs.map((latlng: L.LatLng) => [latlng.lng, latlng.lat]);
-        coords.push(coords[0]); // Close the polygon
-        const polygon = turf.polygon([coords]);
-        area = turf.area(polygon) / 1000000; // Convert to km²
-      }
+      const { coordinates, area } = calculateLayerData(layer, layerType);
 
       const cost = Math.ceil(area / 5) * 10; // $10 per 5km²
 
@@ -198,51 +454,9 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
         coordinates,
         imageData: '' // No image for now
       });
+
+      updateCoverage();
     });
-
-    // Helper function to calculate layer data
-    const calculateLayerData = (layer: any, layerType: string) => {
-      let coordinates: string[] = [];
-      let area = 0;
-
-      if (layerType === 'rectangle') {
-        const bounds = layer.getBounds();
-        const ne = bounds.getNorthEast();
-        const sw = bounds.getSouthWest();
-        const nw = L.latLng(ne.lat, sw.lng);
-        const se = L.latLng(sw.lat, ne.lng);
-        
-        coordinates = [
-          `${ne.lat},${ne.lng}`,
-          `${se.lat},${se.lng}`,
-          `${sw.lat},${sw.lng}`,
-          `${nw.lat},${nw.lng}`,
-          `${ne.lat},${ne.lng}` // Close the polygon
-        ];
-
-        // Calculate area using Turf
-        const polygon = turf.polygon([[
-          [ne.lng, ne.lat],
-          [se.lng, se.lat],
-          [sw.lng, sw.lat],
-          [nw.lng, nw.lat],
-          [ne.lng, ne.lat]
-        ]]);
-        area = turf.area(polygon) / 1000000; // Convert to km²
-      } else if (layerType === 'polygon') {
-        const latlngs = layer.getLatLngs()[0];
-        coordinates = latlngs.map((latlng: L.LatLng) => `${latlng.lat},${latlng.lng}`);
-        coordinates.push(coordinates[0]); // Close the polygon
-
-        // Convert to Turf polygon format
-        const coords = latlngs.map((latlng: L.LatLng) => [latlng.lng, latlng.lat]);
-        coords.push(coords[0]); // Close the polygon
-        const polygon = turf.polygon([coords]);
-        area = turf.area(polygon) / 1000000; // Convert to km²
-      }
-
-      return { coordinates, area };
-    };
 
     // Helper function to sync all remaining layers
     const syncRemainingLayers = () => {
@@ -258,23 +472,11 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
           imageData: '',
           geofences: []
         });
+        updateCoverage();
       } else {
         // Calculate data for all remaining layers
         const geofences = remainingLayers.map((layer: any) => {
-          // Determine layer type - this is tricky as we need to infer it from the layer
-          const latLngs = layer.getLatLngs ? layer.getLatLngs() : null;
-          const bounds = layer.getBounds ? layer.getBounds() : null;
-          
-          let layerType = 'polygon';
-          if (bounds && latLngs && latLngs[0] && latLngs[0].length === 4) {
-            // Check if it's a rectangle (4 corners forming a rectangle)
-            const corners = latLngs[0];
-            const isRectangle = corners.length === 4 && 
-              corners[0].lat === corners[3].lat && corners[1].lat === corners[2].lat &&
-              corners[0].lng === corners[1].lng && corners[2].lng === corners[3].lng;
-            if (isRectangle) layerType = 'rectangle';
-          }
-          
+          const layerType = inferLayerType(layer);
           const layerData = calculateLayerData(layer, layerType);
           
           return {
@@ -293,6 +495,7 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
           imageData: '',
           geofences
         });
+        updateCoverage();
       }
     };
 
@@ -305,6 +508,30 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
     mapInstanceRef.current = map;
 
     return () => {
+      map.off('draw:deleted', syncRemainingLayers);
+      map.off('draw:edited', syncRemainingLayers);
+      map.off('moveend', schedulePointFetch);
+      map.off('zoomend', schedulePointFetch);
+
+      if (markerFetchTimeoutRef.current) {
+        clearTimeout(markerFetchTimeoutRef.current);
+        markerFetchTimeoutRef.current = null;
+      }
+
+      if (markerAbortControllerRef.current) {
+        markerAbortControllerRef.current.abort();
+        markerAbortControllerRef.current = null;
+      }
+
+      pokestopLayer.clearLayers();
+      gymLayer.clearLayers();
+      pokestopLayer.remove();
+      gymLayer.remove();
+      pointsLayerRef.current = null;
+      activePointsRef.current = [];
+      schedulePointFetchRef.current = null;
+      updateCoverageRef.current = null;
+
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -317,8 +544,22 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
     if (shouldClear && drawnItemsRef.current) {
       drawnItemsRef.current.clearLayers();
       onClearRef.current();
+      if (onCoverageChangeRef.current) {
+        onCoverageChangeRef.current({ gyms: 0, pokestops: 0 });
+      }
     }
   }, [shouldClear]);
+
+  useEffect(() => {
+    showGymsRef.current = showGyms;
+    showPokestopsRef.current = showPokestops;
+
+    if (schedulePointFetchRef.current) {
+      schedulePointFetchRef.current(true);
+    } else if (updateCoverageRef.current) {
+      updateCoverageRef.current();
+    }
+  }, [showGyms, showPokestops]);
 
   return (
     <div className="relative">
@@ -330,6 +571,7 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(({ onShapeComplete, shouldC
       <div className="absolute top-2 left-2 bg-card/90 backdrop-blur-sm rounded p-2 text-xs text-muted-foreground">
         <p>🖱️ Use tools on the right to draw areas</p>
         <p>📐 Rectangle or custom polygon</p>
+        <p>🔍 Zoom to level 11+ to see gyms & pokestops</p>
       </div>
     </div>
   );

@@ -3,6 +3,68 @@ import express2 from "express";
 
 // server/routes.ts
 import { createServer } from "http";
+
+// server/db.ts
+import mysql from "mysql2/promise";
+var pool;
+function getPool() {
+  if (!pool) {
+    const host = process.env.DB_HOST;
+    const user = process.env.DB_USER;
+    const password = process.env.DB_PASSWORD;
+    const database = process.env.DB_NAME ?? "golbat";
+    const port = Number(process.env.DB_PORT ?? 3306);
+    if (!host || !user || !password) {
+      throw new Error(
+        "Database configuration missing. Set DB_HOST, DB_USER, DB_PASSWORD (and optionally DB_NAME, DB_PORT)."
+      );
+    }
+    pool = mysql.createPool({
+      host,
+      user,
+      password,
+      database,
+      port,
+      connectionLimit: 5,
+      waitForConnections: true,
+      ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : void 0
+    });
+  }
+  return pool;
+}
+async function fetchMapPoints(bounds) {
+  const poolInstance = getPool();
+  const north = Math.max(bounds.north, bounds.south);
+  const south = Math.min(bounds.north, bounds.south);
+  const east = Math.max(bounds.east, bounds.west);
+  const west = Math.min(bounds.east, bounds.west);
+  const query = `
+    SELECT id, lat, lon, team_id AS teamId, 'gym' AS type
+    FROM golbat.gym
+    WHERE lat BETWEEN ? AND ?
+      AND lon BETWEEN ? AND ?
+      AND COALESCE(deleted, 0) = 0
+      AND COALESCE(enabled, 1) = 1
+    UNION ALL
+    SELECT id, lat, lon, NULL AS teamId, 'pokestop' AS type
+    FROM golbat.pokestop
+    WHERE lat BETWEEN ? AND ?
+      AND lon BETWEEN ? AND ?
+      AND COALESCE(deleted, 0) = 0
+      AND COALESCE(enabled, 1) = 1
+  `;
+  const params = [south, north, west, east, south, north, west, east];
+  const [rows] = await poolInstance.query(query, params);
+  return rows.map((row) => ({
+    id: row.id,
+    lat: Number(row.lat),
+    lon: Number(row.lon),
+    type: row.type,
+    teamId: row.teamId == null ? void 0 : Number(row.teamId)
+  }));
+}
+
+// server/routes.ts
 async function sendDiscordWebhook(webhookUrl, content, imageData) {
   try {
     const payload = {
@@ -68,7 +130,7 @@ async function registerRoutes(app2) {
           error: "Discord webhook not configured"
         });
       }
-      const tierDisplayName = formData.pricingTier === "shadows-raids" ? "Shadows and Raids ($10 per 100km\xB2)" : "Pok\xE9mon, PVP and Quests ($15 per 5km\xB2)";
+      const tierDisplayName = formData.pricingTier === "shadows-raids" ? "Pokestops and Gyms ($10 per 100km\xB2)" : "Pokemon and Quests ($15 per 5km\xB2)";
       const messageContent = `
 \u{1F5FA}\uFE0F **New Pok\xE9Vision Area Request**
 
@@ -106,6 +168,33 @@ ${geofenceCollection.formattedCoordinates || "No coordinates available"}
         success: false,
         error: "Internal server error"
       });
+    }
+  });
+  app2.get("/api/map-points", async (req, res) => {
+    try {
+      const { north, south, east, west, zoom } = req.query;
+      const zoomLevel = Number(zoom);
+      if (Number.isFinite(zoomLevel) && zoomLevel < 11) {
+        return res.json({ points: [] });
+      }
+      const parsedNorth = Number(north);
+      const parsedSouth = Number(south);
+      const parsedEast = Number(east);
+      const parsedWest = Number(west);
+      const inputs = [parsedNorth, parsedSouth, parsedEast, parsedWest];
+      if (inputs.some((value) => !Number.isFinite(value))) {
+        return res.status(400).json({ error: "Invalid bounds provided" });
+      }
+      const points = await fetchMapPoints({
+        north: parsedNorth,
+        south: parsedSouth,
+        east: parsedEast,
+        west: parsedWest
+      });
+      res.json({ points });
+    } catch (error) {
+      console.error("Error fetching map points", error);
+      res.status(500).json({ error: "Failed to load map points" });
     }
   });
   const httpServer = createServer(app2);
@@ -261,7 +350,7 @@ app.use((req, res, next) => {
   } else {
     serveStatic(app);
   }
-  const port = parseInt(process.env.PORT || "5000", 10);
+  const port = parseInt(process.env.PORT || "4000", 10);
   server.listen({
     port,
     host: "0.0.0.0",

@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { fetchMapPoints } from "./db";
 
 async function sendDiscordWebhook(webhookUrl: string, content: string, imageData?: string): Promise<boolean> {
   try {
@@ -85,8 +85,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Get pricing tier display name
       const tierDisplayName = formData.pricingTier === 'shadows-raids' 
-        ? 'Shadows and Raids ($10 per 100km²)' 
-        : 'Pokémon, PVP and Quests ($15 per 5km²)';
+        ? 'Pokestops and Gyms ($10 per 100km²)' 
+        : 'Pokemon and Quests ($15 per 5km²)';
 
       // Prepare Discord message content
       const messageContent = `
@@ -130,6 +130,39 @@ ${geofenceCollection.formattedCoordinates || 'No coordinates available'}
         success: false, 
         error: "Internal server error" 
       });
+    }
+  });
+
+  app.get("/api/map-points", async (req, res) => {
+    try {
+      const { north, south, east, west, zoom } = req.query;
+
+      const zoomLevel = Number(zoom);
+      if (Number.isFinite(zoomLevel) && zoomLevel < 11) {
+        return res.json({ points: [] });
+      }
+
+      const parsedNorth = Number(north);
+      const parsedSouth = Number(south);
+      const parsedEast = Number(east);
+      const parsedWest = Number(west);
+
+      const inputs = [parsedNorth, parsedSouth, parsedEast, parsedWest];
+      if (inputs.some((value) => !Number.isFinite(value))) {
+        return res.status(400).json({ error: "Invalid bounds provided" });
+      }
+
+      const points = await fetchMapPoints({
+        north: parsedNorth,
+        south: parsedSouth,
+        east: parsedEast,
+        west: parsedWest,
+      });
+
+      res.json({ points });
+    } catch (error) {
+      console.error("Error fetching map points", error);
+      res.status(500).json({ error: "Failed to load map points" });
     }
   });
 
