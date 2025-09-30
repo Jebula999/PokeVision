@@ -45,7 +45,8 @@ const RequestArea = () => {
   const [showGyms, setShowGyms] = useState(true);
   const [showPokestops, setShowPokestops] = useState(true);
 
-  const sanitizeInput = useCallback((value: string) => value.replace(/[^a-zA-Z0-9]/g, ''), []);
+  const sanitizeDiscordUsername = useCallback((value: string) => value.replace(/[^a-zA-Z0-9]/g, ''), []);
+  const sanitizeAlphaNumSpace = useCallback((value: string) => value.replace(/[^a-zA-Z0-9 ]/g, ''), []);
 
   const tierSummaries = [
     {
@@ -422,7 +423,7 @@ const RequestArea = () => {
                     id="discordUsername"
                     value={formData.discordUsername}
                     onChange={(e) => {
-                      const sanitized = sanitizeInput(e.target.value);
+                      const sanitized = sanitizeDiscordUsername(e.target.value);
                       setFormData(prev => ({ ...prev, discordUsername: sanitized }));
                     }}
                     placeholder="yourdiscordusername"
@@ -441,12 +442,11 @@ const RequestArea = () => {
                     id="areaName"
                     value={formData.areaName}
                     onChange={(e) => {
-                      const sanitized = sanitizeInput(e.target.value);
+                      const sanitized = sanitizeAlphaNumSpace(e.target.value);
                       setFormData(prev => ({ ...prev, areaName: sanitized }));
                     }}
-                    placeholder="AreaName123"
+                    placeholder="Downtown Poke Stops"
                     required
-                    pattern="[A-Za-z0-9]*"
                     data-testid="input-area-name"
                   />
                 </div>
@@ -486,7 +486,7 @@ const RequestArea = () => {
                   id="questions"
                   value={formData.questions}
                   onChange={(e) => {
-                    const sanitized = sanitizeInput(e.target.value);
+                    const sanitized = sanitizeAlphaNumSpace(e.target.value);
                     setFormData(prev => ({ ...prev, questions: sanitized }));
                   }}
                   placeholder="Any questions or special requests for this area..."

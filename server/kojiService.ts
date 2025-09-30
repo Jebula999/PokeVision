@@ -152,6 +152,15 @@ class KojiService {
     return currentMax + 1;
   }
 
+  private async nextGeofenceProjectId(connection: PoolConnection): Promise<number> {
+    const [rows] = await connection.query<{ id: number }[]>(
+      "SELECT id FROM geofence_project ORDER BY id DESC LIMIT 1 FOR UPDATE",
+    );
+
+    const currentMax = rows.length > 0 ? Number(rows[0].id) : 0;
+    return currentMax + 1;
+  }
+
   async recordAreaRequest(payload: KojiAreaRequest): Promise<{ id: number; name: string }> {
     if (!payload.geofences || payload.geofences.length === 0) {
       throw new Error("Cannot record Koji geofence request without geofences");
@@ -182,6 +191,22 @@ class KojiService {
           JSON.stringify(geometry),
         ],
       );
+
+      let nextProjectId = await this.nextGeofenceProjectId(connection);
+      const projectIds = [2, 7];
+
+      for (const projectId of projectIds) {
+        await connection.execute(
+          `INSERT INTO geofence_project (id, geofence_id, project_id)
+           VALUES (?, ?, ?)`,
+          [
+            nextProjectId,
+            id,
+            projectId,
+          ],
+        );
+        nextProjectId += 1;
+      }
 
       await connection.commit();
       log(`Inserted Koji geofence #${id} (${recordName})`, "koji");
