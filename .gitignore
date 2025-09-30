@@ -1,0 +1,7 @@
+config.env
+config.env.local
+.env
+.env.local
+.env.*
+!.env.example
+!config.env.example

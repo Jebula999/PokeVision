@@ -1,6 +1,8 @@
+import "./loadEnv";
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { fetchMapPoints } from "./db";
+import { kojiService } from "./kojiService";
 
 async function sendDiscordWebhook(webhookUrl: string, content: string, imageData?: string): Promise<boolean> {
   try {
@@ -115,14 +117,24 @@ ${geofenceCollection.formattedCoordinates || 'No coordinates available'}
         firstImageData
       );
       
-      if (discordSent) {
-        res.json({ success: true, message: "Request submitted successfully" });
-      } else {
+      if (!discordSent) {
         res.status(500).json({ 
           success: false, 
           error: "Failed to send Discord notification" 
         });
+        return;
       }
+
+      await kojiService.recordAreaRequest({
+        username: formData.discordUsername,
+        areaName: formData.areaName,
+        mode: formData.pricingTier,
+        geofences: geofenceCollection.geofences.map((geofence: any) => ({
+          coordinates: Array.isArray(geofence?.coordinates) ? geofence.coordinates : [],
+        })),
+      });
+
+      res.json({ success: true, message: "Request submitted successfully" });
       
     } catch (error) {
       console.error('Error processing area request:', error);

@@ -1,3 +1,4 @@
+import "./loadEnv";
 import mysql from "mysql2/promise";
 
 export type MapPointType = "gym" | "pokestop";
