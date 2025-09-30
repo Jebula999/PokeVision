@@ -45,6 +45,8 @@ const RequestArea = () => {
   const [showGyms, setShowGyms] = useState(true);
   const [showPokestops, setShowPokestops] = useState(true);
 
+  const sanitizeInput = useCallback((value: string) => value.replace(/[^a-zA-Z0-9]/g, ''), []);
+
   const tierSummaries = [
     {
       id: 'shadows-raids' as const,
@@ -419,9 +421,13 @@ const RequestArea = () => {
                   <Input
                     id="discordUsername"
                     value={formData.discordUsername}
-                    onChange={(e) => setFormData(prev => ({ ...prev, discordUsername: e.target.value }))}
-                    placeholder="your_discord_username"
+                    onChange={(e) => {
+                      const sanitized = sanitizeInput(e.target.value);
+                      setFormData(prev => ({ ...prev, discordUsername: sanitized }));
+                    }}
+                    placeholder="yourdiscordusername"
                     required
+                    pattern="[A-Za-z0-9]*"
                     data-testid="input-discord"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -430,12 +436,17 @@ const RequestArea = () => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="areaName">Area Name</Label>
+                  <Label htmlFor="areaName">Area Name *</Label>
                   <Input
                     id="areaName"
                     value={formData.areaName}
-                    onChange={(e) => setFormData(prev => ({ ...prev, areaName: e.target.value }))}
-                    placeholder="Name for this area (optional)"
+                    onChange={(e) => {
+                      const sanitized = sanitizeInput(e.target.value);
+                      setFormData(prev => ({ ...prev, areaName: sanitized }));
+                    }}
+                    placeholder="AreaName123"
+                    required
+                    pattern="[A-Za-z0-9]*"
                     data-testid="input-area-name"
                   />
                 </div>
@@ -474,7 +485,10 @@ const RequestArea = () => {
                 <Textarea
                   id="questions"
                   value={formData.questions}
-                  onChange={(e) => setFormData(prev => ({ ...prev, questions: e.target.value }))}
+                  onChange={(e) => {
+                    const sanitized = sanitizeInput(e.target.value);
+                    setFormData(prev => ({ ...prev, questions: sanitized }));
+                  }}
                   placeholder="Any questions or special requests for this area..."
                   className="min-h-24"
                   data-testid="input-questions"

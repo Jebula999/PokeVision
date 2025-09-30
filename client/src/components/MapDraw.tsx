@@ -59,6 +59,8 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(
   const markerFetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markerAbortControllerRef = useRef<AbortController | null>(null);
   const activePointsRef = useRef<MapPointFeature[]>([]);
+  const pokestopLayerRef = useRef<L.LayerGroup | null>(null);
+  const gymLayerRef = useRef<L.LayerGroup | null>(null);
   const showGymsRef = useRef<boolean>(showGyms);
   const showPokestopsRef = useRef<boolean>(showPokestops);
   const schedulePointFetchRef = useRef<((immediate?: boolean) => void) | null>(null);
@@ -177,6 +179,8 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(
     // Create layer group for gyms/pokestops
     const pokestopLayer = L.layerGroup().addTo(map);
     const gymLayer = L.layerGroup().addTo(map);
+    pokestopLayerRef.current = pokestopLayer;
+    gymLayerRef.current = gymLayer;
     const combinedLayer = L.layerGroup([pokestopLayer, gymLayer]);
     pointsLayerRef.current = combinedLayer;
 
@@ -289,6 +293,17 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(
 
       const zoomLevel = map.getZoom();
       if (zoomLevel < 11) {
+        pokestopLayer.clearLayers();
+        gymLayer.clearLayers();
+        activePointsRef.current = [];
+        updateCoverage();
+        return;
+      }
+
+      const includeGymsBeforeFetch = showGymsRef.current !== false;
+      const includePokestopsBeforeFetch = showPokestopsRef.current !== false;
+
+      if (!includeGymsBeforeFetch && !includePokestopsBeforeFetch) {
         pokestopLayer.clearLayers();
         gymLayer.clearLayers();
         activePointsRef.current = [];
@@ -531,6 +546,8 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(
       activePointsRef.current = [];
       schedulePointFetchRef.current = null;
       updateCoverageRef.current = null;
+      pokestopLayerRef.current = null;
+      gymLayerRef.current = null;
 
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
@@ -553,6 +570,16 @@ const MapDraw = forwardRef<MapDrawRef, MapDrawProps>(
   useEffect(() => {
     showGymsRef.current = showGyms;
     showPokestopsRef.current = showPokestops;
+
+    if (!showGyms && !showPokestops) {
+      pokestopLayerRef.current?.clearLayers();
+      gymLayerRef.current?.clearLayers();
+      activePointsRef.current = [];
+      if (updateCoverageRef.current) {
+        updateCoverageRef.current();
+      }
+      return;
+    }
 
     if (schedulePointFetchRef.current) {
       schedulePointFetchRef.current(true);
