@@ -1,8 +1,9 @@
 import "./loadEnv";
-import type { Express } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { fetchMapPoints } from "./db";
 import { kojiService } from "./kojiService";
+import passport from "passport";
 
 async function sendDiscordWebhook(webhookUrl: string, content: string, imageData?: string): Promise<boolean> {
   try {
@@ -45,11 +46,85 @@ async function sendDiscordWebhook(webhookUrl: string, content: string, imageData
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  app.get("/api/auth/session", (req, res) => {
+    if (req.isAuthenticated() && req.user) {
+      const { id, username, discriminator, globalName, avatar } = req.user;
+      return res.json({
+        authenticated: true,
+        user: {
+          id,
+          username,
+          discriminator: discriminator ?? null,
+          globalName: globalName ?? null,
+          avatar: avatar ?? null,
+        },
+      });
+    }
+
+    res.json({ authenticated: false });
+  });
+
+  app.post("/auth/logout", (req: Request, res: Response, next: NextFunction) => {
+    req.logout((err) => {
+      if (err) {
+        next(err);
+        return;
+      }
+
+      if (req.session) {
+        req.session.destroy(() => {
+          res.json({ success: true });
+        });
+      } else {
+        res.json({ success: true });
+      }
+    });
+  });
+
+  app.get("/auth/discord", passport.authenticate("discord"));
+
+  app.get(
+    "/auth/discord/callback",
+    passport.authenticate("discord", {
+      failureRedirect: "/request-area?auth=failed",
+    }),
+    (_req, res) => {
+      res.redirect("/request-area");
+    },
+  );
   
   // Area request submission endpoint
   app.post("/api/request-area", async (req, res) => {
     try {
-      const { formData, geofenceCollection } = req.body;
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({
+          success: false,
+          error: "Discord authentication required",
+        });
+      }
+
+      const { formData: incomingFormData, geofenceCollection } = req.body ?? {};
+      const normalizedAreaName =
+        typeof incomingFormData?.areaName === "string"
+          ? incomingFormData.areaName.trim()
+          : "";
+      const normalizedQuestions =
+        typeof incomingFormData?.questions === "string"
+          ? incomingFormData.questions.trim()
+          : "";
+      const pricingTier =
+        incomingFormData?.pricingTier === "pokemon-pvp" ? "pokemon-pvp" : "shadows-raids";
+
+      const discordHandle =
+        (req.user.globalName && req.user.globalName.trim()) ||
+        (req.user.discriminator ? `${req.user.username}#${req.user.discriminator}` : req.user.username);
+
+      const formData = {
+        discordUsername: discordHandle,
+        areaName: normalizedAreaName,
+        questions: normalizedQuestions,
+        pricingTier,
+      };
       
       // Basic security: Check for required timestamp (within last 5 minutes)
       const requestTimestamp = req.headers['x-request-timestamp'];
@@ -69,7 +144,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Validate required fields
-      if (!formData?.discordUsername || !geofenceCollection?.geofences?.length) {
+      if (!formData.areaName || !geofenceCollection?.geofences?.length) {
         return res.status(400).json({ 
           success: false, 
           error: "Missing required fields" 
@@ -95,6 +170,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 🗺️ **New PokéVision Area Request**
 
 **💬 Discord:** ${formData.discordUsername}
+**🆔 Discord ID:** ${req.user.id}
 ${formData.areaName ? `**🏷️ Area Name:** ${formData.areaName}` : ''}
 **💎 Pricing Tier:** ${tierDisplayName}
 **📊 Number of Areas:** ${geofenceCollection.geofences.length}

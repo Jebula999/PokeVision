@@ -144,20 +144,20 @@ class KojiService {
   }
 
   private async nextGeofenceId(connection: PoolConnection): Promise<number> {
-    const [rows] = await connection.query<{ id: number }[]>(
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
       "SELECT id FROM geofence ORDER BY id DESC LIMIT 1 FOR UPDATE",
     );
 
-    const currentMax = rows.length > 0 ? Number(rows[0].id) : 0;
+    const currentMax = rows.length > 0 ? Number((rows[0] as { id?: number }).id ?? 0) : 0;
     return currentMax + 1;
   }
 
   private async nextGeofenceProjectId(connection: PoolConnection): Promise<number> {
-    const [rows] = await connection.query<{ id: number }[]>(
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
       "SELECT id FROM geofence_project ORDER BY id DESC LIMIT 1 FOR UPDATE",
     );
 
-    const currentMax = rows.length > 0 ? Number(rows[0].id) : 0;
+    const currentMax = rows.length > 0 ? Number((rows[0] as { id?: number }).id ?? 0) : 0;
     return currentMax + 1;
   }
 

@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Link } from "wouter";
 import { Home } from "lucide-react";
-import MapDraw, { MapDrawRef } from "@/components/MapDraw";
+import MapDraw, { MapDrawRef, type MapSnapshot } from "@/components/MapDraw";
 import pokevisionLogo from "@assets/image6555_1758124202791.png";
 
 interface GeofenceData {
@@ -24,6 +24,51 @@ interface GeofenceCollection {
   totalCost: number;
 }
 
+type PricingTier = 'shadows-raids' | 'pokemon-pvp';
+
+interface SubmitFormData {
+  discordUsername: string;
+  areaName: string;
+  questions: string;
+  pricingTier: PricingTier;
+}
+
+interface SubmitPayload {
+  formData: SubmitFormData;
+  geofenceCollection: GeofenceCollection & { formattedCoordinates: string };
+}
+
+interface DiscordSessionUser {
+  id: string;
+  username: string;
+  discriminator?: string | null;
+  globalName?: string | null;
+  avatar?: string | null;
+}
+
+interface StoredState {
+  snapshot?: MapSnapshot | null;
+  formData?: {
+    areaName?: string;
+    questions?: string;
+    pricingTier?: PricingTier;
+  };
+}
+
+const RESTORE_STORAGE_KEY = "pv-request-area-state";
+
+const formatDiscordDisplayName = (user: DiscordSessionUser | null): string => {
+  if (!user) {
+    return "";
+  }
+
+  if (user.globalName && user.globalName.trim().length > 0) {
+    return user.globalName.trim();
+  }
+
+  return user.discriminator ? `${user.username}#${user.discriminator}` : user.username;
+};
+
 const RequestArea = () => {
   const [geofenceCollection, setGeofenceCollection] = useState<GeofenceCollection>({
     geofences: [],
@@ -32,11 +77,11 @@ const RequestArea = () => {
   });
   const [shouldClearCanvas, setShouldClearCanvas] = useState(false);
   const mapRef = useRef<MapDrawRef>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<SubmitFormData>({
     discordUsername: '',
     areaName: '',
     questions: '',
-    pricingTier: 'shadows-raids' as 'shadows-raids' | 'pokemon-pvp'
+    pricingTier: 'shadows-raids',
   });
   const isPokemonTier = formData.pricingTier === 'pokemon-pvp';
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -44,8 +89,11 @@ const RequestArea = () => {
   const [coverageCounts, setCoverageCounts] = useState({ gyms: 0, pokestops: 0 });
   const [showGyms, setShowGyms] = useState(true);
   const [showPokestops, setShowPokestops] = useState(true);
+  const [authUser, setAuthUser] = useState<DiscordSessionUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
+  const pendingRestoreRef = useRef<StoredState | null>(null);
 
-  const sanitizeDiscordUsername = useCallback((value: string) => value.replace(/[^a-zA-Z0-9]/g, ''), []);
   const sanitizeAlphaNumSpace = useCallback((value: string) => value.replace(/[^a-zA-Z0-9 ]/g, ''), []);
 
   const tierSummaries = [
@@ -164,7 +212,148 @@ const RequestArea = () => {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const submitWithRetry = async (maxRetries: number = 5): Promise<void> => {
+  const fetchAuthSession = useCallback(async () => {
+    try {
+      setAuthLoading(true);
+      const response = await fetch('/api/auth/session', { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error(`Session request failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.authenticated && data.user) {
+        setAuthUser({
+          id: data.user.id,
+          username: data.user.username,
+          discriminator: data.user.discriminator,
+          globalName: data.user.globalName,
+          avatar: data.user.avatar,
+        });
+      } else {
+        setAuthUser(null);
+      }
+    } catch (error) {
+      console.error('Failed to load Discord session', error);
+      setAuthUser(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchAuthSession();
+  }, [fetchAuthSession]);
+
+  useEffect(() => {
+    const handle = formatDiscordDisplayName(authUser);
+    setFormData((prev) => {
+      if (prev.discordUsername === handle) {
+        return prev;
+      }
+      return {
+        ...prev,
+        discordUsername: handle,
+      };
+    });
+  }, [authUser]);
+
+  const restorePendingState = useCallback(() => {
+    const raw = sessionStorage.getItem(RESTORE_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    sessionStorage.removeItem(RESTORE_STORAGE_KEY);
+
+    try {
+      const stored: StoredState = JSON.parse(raw);
+
+      if (stored.formData) {
+        const { areaName, questions, pricingTier } = stored.formData;
+        setFormData((prev) => ({
+          ...prev,
+          areaName: areaName ? sanitizeAlphaNumSpace(areaName) : '',
+          questions: questions ? sanitizeAlphaNumSpace(questions) : '',
+          pricingTier: pricingTier ?? prev.pricingTier,
+        }));
+      }
+
+      if (stored.snapshot) {
+        pendingRestoreRef.current = stored;
+
+        if (mapReady && mapRef.current?.loadSnapshot) {
+          mapRef.current.loadSnapshot(stored.snapshot);
+          pendingRestoreRef.current = null;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to restore pending request state', error);
+      pendingRestoreRef.current = null;
+    }
+  }, [mapReady, sanitizeAlphaNumSpace]);
+
+  useEffect(() => {
+    if (!authLoading) {
+      restorePendingState();
+    }
+  }, [authLoading, restorePendingState]);
+
+  useEffect(() => {
+    if (pendingRestoreRef.current?.snapshot && mapReady && mapRef.current?.loadSnapshot) {
+      mapRef.current.loadSnapshot(pendingRestoreRef.current.snapshot);
+      pendingRestoreRef.current = null;
+    }
+  }, [mapReady]);
+
+  useEffect(() => {
+    return () => {
+      setMapReady(false);
+      pendingRestoreRef.current = null;
+    };
+  }, []);
+
+  const handleDiscordLogin = () => {
+    try {
+      const snapshot = mapRef.current?.getSnapshot();
+      const stateToPersist: StoredState = {
+        snapshot: snapshot ?? null,
+        formData: {
+          areaName: formData.areaName,
+          questions: formData.questions,
+          pricingTier: formData.pricingTier,
+        },
+      };
+      sessionStorage.setItem(RESTORE_STORAGE_KEY, JSON.stringify(stateToPersist));
+    } catch (error) {
+      console.error('Failed to persist request state before Discord login', error);
+    }
+
+    window.location.href = '/auth/discord';
+  };
+
+  const handleDiscordLogout = async () => {
+    try {
+      const response = await fetch('/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error(`Logout failed with status ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Failed to log out from Discord', error);
+    } finally {
+      sessionStorage.removeItem(RESTORE_STORAGE_KEY);
+      await fetchAuthSession();
+    }
+  };
+
+  const submitWithRetry = async (
+    payload: SubmitPayload,
+    onSuccess: () => void,
+    maxRetries: number = 5,
+  ): Promise<void> => {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       setRetryAttempt(attempt);
       
@@ -175,33 +364,14 @@ const RequestArea = () => {
             'Content-Type': 'application/json',
             'X-Request-Timestamp': Date.now().toString()
           },
-          body: JSON.stringify({ 
-            formData, 
-            geofenceCollection: {
-              ...geofenceCollection,
-              formattedCoordinates: formatCoordinatesForDiscord()
-            }
-          }),
+          credentials: 'include',
+          body: JSON.stringify(payload),
         });
 
         const result = await response.json();
 
         if (response.ok && result.success) {
-          // Success! Reset form and clear map
-          alert('Request submitted successfully! We will contact you via Discord soon.');
-          setFormData({
-            discordUsername: '',
-            areaName: '',
-            questions: '',
-            pricingTier: 'shadows-raids' as 'shadows-raids' | 'pokemon-pvp'
-          });
-          setGeofenceCollection({
-            geofences: [],
-            totalArea: 0,
-            totalCost: 0
-          });
-          setCoverageCounts({ gyms: 0, pokestops: 0 });
-          setShouldClearCanvas(true);
+          onSuccess();
           return;
         } 
         
@@ -233,9 +403,19 @@ const RequestArea = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (geofenceCollection.geofences.length === 0 || !formData.discordUsername) {
-      alert('Please enter your Discord username and draw at least one area on the map.');
+
+    if (!authUser) {
+      alert('Please sign in with Discord before submitting a request.');
+      return;
+    }
+
+    if (geofenceCollection.geofences.length === 0) {
+      alert('Please draw at least one area on the map.');
+      return;
+    }
+
+    if (!formData.areaName.trim()) {
+      alert('Please provide an area name.');
       return;
     }
 
@@ -245,9 +425,39 @@ const RequestArea = () => {
 
     setIsSubmitting(true);
     setRetryAttempt(0);
+    const discordHandle = formatDiscordDisplayName(authUser);
+    const payload: SubmitPayload = {
+      formData: {
+        ...formData,
+        discordUsername: discordHandle,
+        areaName: formData.areaName.trim(),
+        questions: formData.questions.trim(),
+      },
+      geofenceCollection: {
+        ...geofenceCollection,
+        formattedCoordinates: formatCoordinatesForDiscord(),
+      },
+    };
+    const handleSuccess = () => {
+      alert('Request submitted successfully! We will contact you via Discord soon.');
+      sessionStorage.removeItem(RESTORE_STORAGE_KEY);
+      setFormData({
+        discordUsername: discordHandle,
+        areaName: '',
+        questions: '',
+        pricingTier: 'shadows-raids',
+      });
+      setGeofenceCollection({
+        geofences: [],
+        totalArea: 0,
+        totalCost: 0,
+      });
+      setCoverageCounts({ gyms: 0, pokestops: 0 });
+      setShouldClearCanvas(true);
+    };
     
     try {
-      await submitWithRetry();
+      await submitWithRetry(payload, handleSuccess);
     } finally {
       setIsSubmitting(false);
       setRetryAttempt(0);
@@ -379,6 +589,7 @@ const RequestArea = () => {
                   onCoverageChange={setCoverageCounts}
                   showGyms={showGyms}
                   showPokestops={showPokestops}
+                  onReady={() => setMapReady(true)}
                 />
               </div>
               
@@ -412,30 +623,49 @@ const RequestArea = () => {
         {/* Form Section - Full Width Below Map */}
         <Card className="subtle-gold-gradient">
           <CardHeader>
-            <CardTitle>Request Details</CardTitle>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle>Request Details</CardTitle>
+              <div className="flex items-center gap-3">
+                {authUser ? (
+                  <>
+                    <span className="text-sm text-muted-foreground">
+                      Signed in as{' '}
+                      <span className="font-semibold text-foreground">
+                        {formatDiscordDisplayName(authUser)}
+                      </span>
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleDiscordLogout}
+                      disabled={authLoading}
+                      data-testid="button-discord-logout"
+                    >
+                      Sign out
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={handleDiscordLogin}
+                    disabled={authLoading}
+                    className="metallic-gold-border text-foreground hover:bg-primary/10"
+                    data-testid="button-discord-login"
+                  >
+                    {authLoading ? 'Loading...' : 'Sign in with Discord'}
+                  </Button>
+                )}
+              </div>
+            </div>
+            {!authUser && !authLoading && (
+              <p className="text-xs text-muted-foreground">
+                Sign in with Discord to submit a request. We use your Discord identity to contact you.
+              </p>
+            )}
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <Label htmlFor="discordUsername">Discord Username *</Label>
-                  <Input
-                    id="discordUsername"
-                    value={formData.discordUsername}
-                    onChange={(e) => {
-                      const sanitized = sanitizeDiscordUsername(e.target.value);
-                      setFormData(prev => ({ ...prev, discordUsername: sanitized }));
-                    }}
-                    placeholder="yourdiscordusername"
-                    required
-                    pattern="[A-Za-z0-9]*"
-                    data-testid="input-discord"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    We'll contact you via Discord to discuss your area request.
-                  </p>
-                </div>
-
+              <div className="grid grid-cols-1 gap-6">
                 <div className="space-y-2">
                   <Label htmlFor="areaName">Area Name *</Label>
                   <Input
@@ -537,7 +767,12 @@ const RequestArea = () => {
               <Button 
                 type="submit" 
                 className="w-full metallic-gold-bg text-black hover:opacity-90 font-semibold"
-                disabled={geofenceCollection.geofences.length === 0 || isSubmitting}
+                disabled={
+                  geofenceCollection.geofences.length === 0 ||
+                  isSubmitting ||
+                  authLoading ||
+                  !authUser
+                }
                 data-testid="button-submit-request"
               >
                 {isSubmitting ? (
