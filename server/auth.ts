@@ -12,7 +12,6 @@ export interface DiscordAuthUser {
   avatar?: string | null;
 }
 
-const userStore = new Map<string, DiscordAuthUser>();
 const MemoryStore = memorystore(session);
 
 function getDiscordCallbackUrl(): string {
@@ -44,7 +43,7 @@ export function setupAuth(app: Express): void {
   const clientID = process.env.DISCORD_CLIENT_ID;
   const clientSecret = process.env.DISCORD_CLIENT_SECRET;
   const sessionSecret = process.env.SESSION_SECRET;
-  const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 86_400_000);
+  const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 604_800_000);
   const sessionCookieMaxAgeMs = Number(process.env.SESSION_COOKIE_MAX_AGE_MS ?? sessionTtlMs);
 
   const sessionStore = new MemoryStore({
@@ -69,6 +68,7 @@ export function setupAuth(app: Express): void {
     resave: false,
     saveUninitialized: false,
     store: sessionStore,
+    rolling: true,
     cookie: {
       secure: app.get("env") === "production",
       sameSite: "lax",
@@ -78,12 +78,11 @@ export function setupAuth(app: Express): void {
   }));
 
   passport.serializeUser((user: DiscordAuthUser, done) => {
-    done(null, user.id);
+    done(null, user);
   });
 
-  passport.deserializeUser((id: string, done) => {
-    const user = userStore.get(id);
-    done(null, user ?? null);
+  passport.deserializeUser((user: DiscordAuthUser, done) => {
+    done(null, user);
   });
 
   passport.use(
@@ -96,7 +95,6 @@ export function setupAuth(app: Express): void {
       },
       (_accessToken, _refreshToken, profile, done) => {
         const user = normalizeProfile(profile);
-        userStore.set(user.id, user);
         done(null, user);
       },
     ),

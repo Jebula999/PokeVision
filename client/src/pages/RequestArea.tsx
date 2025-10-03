@@ -469,7 +469,7 @@ const RequestArea = () => {
       {/* Header */}
       <div className="border-b border-card-border bg-card/30">
         <div className="container mx-auto max-w-6xl px-4 lg:px-8 py-6">
-          <div className="flex justify-between items-start">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
               <img 
                 src={pokevisionLogo} 
@@ -486,17 +486,35 @@ const RequestArea = () => {
                 </p>
               </div>
             </div>
-            <Link href="/">
-              <Button 
-                variant="outline" 
-                size="lg"
-                className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-8 py-3 flex items-center gap-2"
-                data-testid="button-back-home"
-              >
-                <Home className="w-4 h-4" />
-                Back to Home
-              </Button>
-            </Link>
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              {authUser ? (
+                <span className="text-sm text-muted-foreground" data-testid="label-discord-username">
+                  {formatDiscordDisplayName(authUser)}
+                </span>
+              ) : (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={handleDiscordLogin}
+                  disabled={authLoading}
+                  className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-6"
+                  data-testid="button-discord-login"
+                >
+                  {authLoading ? 'Loading...' : 'Sign in with Discord'}
+                </Button>
+              )}
+              <Link href="/">
+                <Button 
+                  variant="outline" 
+                  size="lg"
+                  className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-8 py-3 flex items-center gap-2"
+                  data-testid="button-back-home"
+                >
+                  <Home className="w-4 h-4" />
+                  Back to Home
+                </Button>
+              </Link>
+            </div>
           </div>
         </div>
       </div>
@@ -625,41 +643,29 @@ const RequestArea = () => {
           <CardHeader>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle>Request Details</CardTitle>
-              <div className="flex items-center gap-3">
-                {authUser ? (
-                  <>
-                    <span className="text-sm text-muted-foreground">
-                      Signed in as{' '}
-                      <span className="font-semibold text-foreground">
-                        {formatDiscordDisplayName(authUser)}
-                      </span>
+              {authUser && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-muted-foreground">
+                    Signed in as{' '}
+                    <span className="font-semibold text-foreground">
+                      {formatDiscordDisplayName(authUser)}
                     </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleDiscordLogout}
-                      disabled={authLoading}
-                      data-testid="button-discord-logout"
-                    >
-                      Sign out
-                    </Button>
-                  </>
-                ) : (
+                  </span>
                   <Button
+                    variant="outline"
                     size="sm"
-                    onClick={handleDiscordLogin}
+                    onClick={handleDiscordLogout}
                     disabled={authLoading}
-                    className="metallic-gold-border text-foreground hover:bg-primary/10"
-                    data-testid="button-discord-login"
+                    data-testid="button-discord-logout"
                   >
-                    {authLoading ? 'Loading...' : 'Sign in with Discord'}
+                    Sign out
                   </Button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
             {!authUser && !authLoading && (
               <p className="text-xs text-muted-foreground">
-                Sign in with Discord to submit a request. We use your Discord identity to contact you.
+                Use the Sign in with Discord button at the top of this page to submit a request. We use your Discord identity to contact you.
               </p>
             )}
           </CardHeader>
