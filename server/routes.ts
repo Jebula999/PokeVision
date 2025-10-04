@@ -201,7 +201,7 @@ ${geofenceCollection.formattedCoordinates || 'No coordinates available'}
         return;
       }
 
-      await kojiService.recordAreaRequest({
+      const kojiRecord = await kojiService.recordAreaRequest({
         username: formData.discordUsername,
         areaName: formData.areaName,
         mode: formData.pricingTier,
@@ -209,6 +209,36 @@ ${geofenceCollection.formattedCoordinates || 'No coordinates available'}
           coordinates: Array.isArray(geofence?.coordinates) ? geofence.coordinates : [],
         })),
       });
+
+      const remoteConfigUrl = process.env.LOCAL_CONFIG_URL;
+      const remoteConfigToken = process.env.CONFIG_UPDATE_TOKEN;
+
+      if (remoteConfigUrl) {
+        try {
+          const response = await fetch(remoteConfigUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(remoteConfigToken ? { 'x-config-token': remoteConfigToken } : {}),
+            },
+            body: JSON.stringify({
+              discordId: req.user.id,
+              areaName: kojiRecord.name,
+            }),
+          });
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`Remote config responded with ${response.status}: ${text}`);
+          }
+
+          console.log(
+            `[roles] Synced remote config with Discord ID ${req.user.id} for area "${kojiRecord.name}"`,
+          );
+        } catch (configError) {
+          console.error('Failed to sync remote local.json config', configError);
+        }
+      }
 
       res.json({ success: true, message: "Request submitted successfully" });
       

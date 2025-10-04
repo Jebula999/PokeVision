@@ -55,7 +55,18 @@ function ensureClosedRing(ring: Position[]): Position[] {
   return ring;
 }
 
-function buildGeometry(geofences: KojiGeofence[]): { geometry: any; geoType: GeoType } {
+function computeBBox(ring: Position[]): [number, number, number, number] {
+  const lons = ring.map(([lon]) => lon);
+  const lats = ring.map(([, lat]) => lat);
+  return [
+    Math.min(...lons),
+    Math.min(...lats),
+    Math.max(...lons),
+    Math.max(...lats),
+  ];
+}
+
+function buildGeometry(geofences: KojiGeofence[]): { geometry: any; geoType: GeoType; bbox: [number, number, number, number] | null } {
   const rings: Position[][] = geofences
     .map((geofence) => {
       const parsed = geofence.coordinates
@@ -75,14 +86,26 @@ function buildGeometry(geofences: KojiGeofence[]): { geometry: any; geoType: Geo
   }
 
   if (rings.length === 1) {
+    const bbox = computeBBox(rings[0]);
     return {
       geoType: "Polygon",
       geometry: {
         type: "Polygon",
         coordinates: [rings[0]],
       },
+      bbox,
     };
   }
+
+  const bbox = rings.reduce<[number, number, number, number]>((acc, ring) => {
+    const [minLon, minLat, maxLon, maxLat] = computeBBox(ring);
+    return [
+      Math.min(acc[0], minLon),
+      Math.min(acc[1], minLat),
+      Math.max(acc[2], maxLon),
+      Math.max(acc[3], maxLat),
+    ];
+  }, [Infinity, Infinity, -Infinity, -Infinity]);
 
   return {
     geoType: "MultiPolygon",
@@ -90,6 +113,7 @@ function buildGeometry(geofences: KojiGeofence[]): { geometry: any; geoType: Geo
       type: "MultiPolygon",
       coordinates: rings.map((ring) => [ring]),
     },
+    bbox,
   };
 }
 
@@ -161,12 +185,21 @@ class KojiService {
     return currentMax + 1;
   }
 
+  private async nextGeofencePropertyId(connection: PoolConnection): Promise<number> {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      "SELECT id FROM geofence_property ORDER BY id DESC LIMIT 1 FOR UPDATE",
+    );
+
+    const currentMax = rows.length > 0 ? Number((rows[0] as { id?: number }).id ?? 0) : 0;
+    return currentMax + 1;
+  }
+
   async recordAreaRequest(payload: KojiAreaRequest): Promise<{ id: number; name: string }> {
     if (!payload.geofences || payload.geofences.length === 0) {
       throw new Error("Cannot record Koji geofence request without geofences");
     }
 
-    const { geometry } = buildGeometry(payload.geofences);
+    const { geometry, bbox } = buildGeometry(payload.geofences);
     const now = new Date();
     const usernameSegment = sanitizeNameSegment(payload.username, "user");
     const areaSegment = sanitizeNameSegment(payload.areaName, "area");
@@ -188,7 +221,7 @@ class KojiService {
           now,
           now,
           mode,
-          JSON.stringify(geometry),
+          JSON.stringify(bbox ? { ...geometry, bbox } : geometry),
         ],
       );
 
@@ -207,6 +240,16 @@ class KojiService {
         );
         nextProjectId += 1;
       }
+
+      const nextGeofencePropertyId = await this.nextGeofencePropertyId(connection);
+      await connection.execute(
+        `INSERT INTO geofence_property (id, geofence_id, property_id)
+         VALUES (?, ?, 1)`,
+        [
+          nextGeofencePropertyId,
+          id,
+        ],
+      );
 
       await connection.commit();
       log(`Inserted Koji geofence #${id} (${recordName})`, "koji");

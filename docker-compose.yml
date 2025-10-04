@@ -5,9 +5,12 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+      - /root/Golbat/ReactMap/server/src/configs:/external-configs
     environment:
       PORT: "5000"
       DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1416732634943328306/1gYG99jBzkRomBjkseLqANRbktIPLpx9wNWc8GyqreRTQKXVvTkUxhWjfrglKpfg1Bkb"  # set yours
+      LOCAL_CONFIG_PATH: "/external-configs/local.json"
+      LOCAL_CONFIG_SYNC_ENABLED: "true"
     command: >
       sh -lc "
       npm ci --include=dev &&

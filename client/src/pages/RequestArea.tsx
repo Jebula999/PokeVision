@@ -10,6 +10,7 @@ import { Link } from "wouter";
 import { Home } from "lucide-react";
 import MapDraw, { MapDrawRef, type MapSnapshot } from "@/components/MapDraw";
 import pokevisionLogo from "@assets/image6555_1758124202791.png";
+import { useDiscordSession, type DiscordSessionUser } from "@/hooks/useDiscordSession";
 
 interface GeofenceData {
   type: 'square' | 'polygon';
@@ -36,14 +37,6 @@ interface SubmitFormData {
 interface SubmitPayload {
   formData: SubmitFormData;
   geofenceCollection: GeofenceCollection & { formattedCoordinates: string };
-}
-
-interface DiscordSessionUser {
-  id: string;
-  username: string;
-  discriminator?: string | null;
-  globalName?: string | null;
-  avatar?: string | null;
 }
 
 interface StoredState {
@@ -89,8 +82,16 @@ const RequestArea = () => {
   const [coverageCounts, setCoverageCounts] = useState({ gyms: 0, pokestops: 0 });
   const [showGyms, setShowGyms] = useState(true);
   const [showPokestops, setShowPokestops] = useState(true);
-  const [authUser, setAuthUser] = useState<DiscordSessionUser | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const {
+    data: sessionData,
+    isPending: authPending,
+    isFetching: authFetching,
+    refetch: refetchAuthSession,
+  } = useDiscordSession();
+  const authUser: DiscordSessionUser | null =
+    sessionData?.authenticated && sessionData.user ? sessionData.user : null;
+  const authLoading = authPending && !sessionData;
+  const authBusy = authPending || authFetching;
   const [mapReady, setMapReady] = useState(false);
   const pendingRestoreRef = useRef<StoredState | null>(null);
 
@@ -212,38 +213,6 @@ const RequestArea = () => {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  const fetchAuthSession = useCallback(async () => {
-    try {
-      setAuthLoading(true);
-      const response = await fetch('/api/auth/session', { credentials: 'include' });
-      if (!response.ok) {
-        throw new Error(`Session request failed with status ${response.status}`);
-      }
-
-      const data = await response.json();
-      if (data.authenticated && data.user) {
-        setAuthUser({
-          id: data.user.id,
-          username: data.user.username,
-          discriminator: data.user.discriminator,
-          globalName: data.user.globalName,
-          avatar: data.user.avatar,
-        });
-      } else {
-        setAuthUser(null);
-      }
-    } catch (error) {
-      console.error('Failed to load Discord session', error);
-      setAuthUser(null);
-    } finally {
-      setAuthLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void fetchAuthSession();
-  }, [fetchAuthSession]);
-
   useEffect(() => {
     const handle = formatDiscordDisplayName(authUser);
     setFormData((prev) => {
@@ -293,10 +262,10 @@ const RequestArea = () => {
   }, [mapReady, sanitizeAlphaNumSpace]);
 
   useEffect(() => {
-    if (!authLoading) {
+    if (!authPending) {
       restorePendingState();
     }
-  }, [authLoading, restorePendingState]);
+  }, [authPending, restorePendingState]);
 
   useEffect(() => {
     if (pendingRestoreRef.current?.snapshot && mapReady && mapRef.current?.loadSnapshot) {
@@ -345,7 +314,7 @@ const RequestArea = () => {
       console.error('Failed to log out from Discord', error);
     } finally {
       sessionStorage.removeItem(RESTORE_STORAGE_KEY);
-      await fetchAuthSession();
+      await refetchAuthSession({ throwOnError: false });
     }
   };
 
@@ -496,24 +465,27 @@ const RequestArea = () => {
                   size="lg"
                   variant="outline"
                   onClick={handleDiscordLogin}
-                  disabled={authLoading}
+                  disabled={authBusy}
                   className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-6"
                   data-testid="button-discord-login"
                 >
                   {authLoading ? 'Loading...' : 'Sign in with Discord'}
                 </Button>
               )}
-              <Link href="/">
-                <Button 
-                  variant="outline" 
-                  size="lg"
-                  className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-8 py-3 flex items-center gap-2"
-                  data-testid="button-back-home"
-                >
-                  <Home className="w-4 h-4" />
-                  Back to Home
-                </Button>
-              </Link>
+              <Button
+                asChild
+                variant="outline"
+                size="lg"
+                className="metallic-gold-border text-foreground hover:bg-primary/10 text-base px-8 py-3 flex items-center gap-2"
+                data-testid="button-back-home"
+              >
+                <Link href="/">
+                  <>
+                    <Home className="w-4 h-4" />
+                    Back to Home
+                  </>
+                </Link>
+              </Button>
             </div>
           </div>
         </div>
@@ -655,7 +627,7 @@ const RequestArea = () => {
                     variant="outline"
                     size="sm"
                     onClick={handleDiscordLogout}
-                    disabled={authLoading}
+                    disabled={authBusy}
                     data-testid="button-discord-logout"
                   >
                     Sign out
@@ -663,7 +635,7 @@ const RequestArea = () => {
                 </div>
               )}
             </div>
-            {!authUser && !authLoading && (
+            {!authUser && !authBusy && (
               <p className="text-xs text-muted-foreground">
                 Use the Sign in with Discord button at the top of this page to submit a request. We use your Discord identity to contact you.
               </p>
@@ -776,7 +748,7 @@ const RequestArea = () => {
                 disabled={
                   geofenceCollection.geofences.length === 0 ||
                   isSubmitting ||
-                  authLoading ||
+                  authBusy ||
                   !authUser
                 }
                 data-testid="button-submit-request"
